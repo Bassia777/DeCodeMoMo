@@ -1,0 +1,6 @@
+# Copy this file to personal_hints.local.txt and replace the examples locally.
+# Never commit personal_hints.local.txt.
+example-name
+example-phrase
+2020
+1234567890

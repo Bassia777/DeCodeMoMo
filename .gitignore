@@ -1,0 +1,10 @@
+# Local-only inputs and generated candidate lists.
+personal_hints.local.txt
+toy_candidates*.txt
+*.local.txt
+
+# Python caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
