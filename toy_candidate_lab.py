@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Offline toy candidate-generation demo.
 
-This intentionally uses only fictional values embedded below. It does not
-read Notes, Keychain, databases, network resources, or user-supplied files.
-The generator is a bounded teaching example: it ranks hypotheses generated
-from explicit rules and writes candidate values to a local text file.
+The generator reads only explicitly supplied hints and exclusion TXT files.
+It does not inspect Notes, Keychain, databases, network resources, or online
+accounts. Candidates stay local and are never submitted automatically.
 """
 
 from __future__ import annotations
@@ -138,7 +137,9 @@ DEFAULT_SHORT_MAX_LENGTH = 15
 DEFAULT_MAX_LENGTH = 20
 DEFAULT_LIMIT = 50_000
 DEFAULT_OUTPUT = Path(__file__).with_name("toy_candidates_v2.txt")
+DEFAULT_V3_OUTPUT = Path(__file__).with_name("toy_candidates_v3.txt")
 DEFAULT_BASELINE = Path(__file__).with_name("toy_candidates_v1.txt")
+DEFAULT_V3_EXCLUSION_PREFIX = 10_101
 DEFAULT_HINTS_FILE = Path(__file__).with_name("personal_hints.local.txt")
 
 
@@ -187,6 +188,29 @@ def load_exclusions(paths: Iterable[Path | str]) -> frozenset[str]:
     for path in paths:
         excluded.update(_load_nonempty_lines(Path(path)))
     return frozenset(excluded)
+
+
+def load_exclusion_prefixes(
+    paths: Iterable[Path | str],
+    prefix_length: int,
+) -> frozenset[str]:
+    """Load only the first ``prefix_length`` candidates from each TXT file."""
+    if prefix_length <= 0:
+        raise ValueError("prefix_length must be a positive integer")
+
+    excluded: set[str] = set()
+    for path in paths:
+        excluded.update(_load_nonempty_lines(Path(path))[:prefix_length])
+    return frozenset(excluded)
+
+
+def _default_v3_exclusion_files() -> tuple[Path, ...]:
+    """Return existing v1/v2 baselines for direct v3 API callers."""
+    return tuple(
+        path
+        for path in (DEFAULT_BASELINE, DEFAULT_OUTPUT)
+        if path.exists()
+    )
 
 
 def _is_numeric(value: str) -> bool:
@@ -455,6 +479,251 @@ def candidates(
         yield candidate.value
 
 
+def _v3_text_variants(value: str) -> Iterator[tuple[str, float, str]]:
+    """Yield source-backed text variants without reversing or leet expansion."""
+    yield value, 100.0, "v3-literal-text"
+    yield value.lower(), 96.0, "v3-text-lower"
+    yield value.upper(), 95.0, "v3-text-upper"
+    yield value.title(), 94.0, "v3-text-title"
+
+
+def _valid_yyyymmdd(value: str) -> bool:
+    if len(value) != 8 or not value.isdigit():
+        return False
+    year = int(value[:4])
+    month = int(value[4:6])
+    day = int(value[6:])
+    if year < 1900 or year > 2099 or month == 0 or month > 12:
+        return False
+    february = 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28
+    days_in_month = (31, february, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    return 1 <= day <= days_in_month[month - 1]
+
+
+def _valid_yymmdd(value: str) -> bool:
+    if len(value) != 6 or not value.isdigit():
+        return False
+    month = int(value[2:4])
+    day = int(value[4:])
+    if month == 0 or month > 12:
+        return False
+    year = 2000 + int(value[:2])
+    return _valid_yyyymmdd(f"{year:04d}{month:02d}{day:02d}")
+
+
+def _v3_numeric_variants(value: str) -> Iterator[tuple[str, float, str]]:
+    """Yield only complete numeric hints and recognisable date/year values."""
+    yield value, 100.0, "v3-literal-number"
+    if len(value) == 4 and value[:2] in {"19", "20"}:
+        yield value, 96.0, "v3-year"
+    elif _valid_yymmdd(value):
+        yield value, 94.0, "v3-date-yymmdd"
+    elif _valid_yyyymmdd(value):
+        yield value, 94.0, "v3-date-yyyymmdd"
+
+
+def _v3_mixed_hint_variants(value: str) -> Iterator[tuple[str, float, str]]:
+    """Keep literal/compact mixed hints and meaningful source components only."""
+    parts = re.findall(r"[A-Za-z]+|[0-9]+", value)
+    if len(parts) < 2:
+        yield value, 100.0, "v3-literal-mixed"
+        return
+
+    yield value, 100.0, "v3-literal-mixed"
+    compact = "".join(parts)
+    if compact != value:
+        yield compact, 96.0, "v3-mixed-compact"
+
+    for part in parts:
+        if len(part) < 2:
+            continue
+        if part.isdigit():
+            for variant, score, rule in _v3_numeric_variants(part):
+                yield variant, score - 4.0, f"v3-mixed-{rule}"
+        else:
+            for variant, score, rule in _v3_text_variants(part):
+                yield variant, score - 4.0, f"v3-mixed-{rule}"
+
+
+def _v3_source_group(rule: str) -> int:
+    """Rank personal source forms before ordered combinations and public pinyin."""
+    if rule.startswith("inspirational-"):
+        return 2
+    if rule.startswith("v3-concat-ordered"):
+        return 1
+    return 0
+
+
+@lru_cache(maxsize=64)
+def _ordered_candidates_v3(
+    hints: tuple[str, ...],
+    short_max_length: int,
+    max_length: int,
+    exclude: frozenset[str] = frozenset(),
+) -> list[_Candidate]:
+    """Build a conservative v3 pool from meaningful source-backed rules."""
+    _validate_lengths(short_max_length, max_length)
+
+    values: dict[str, _Candidate] = {}
+    next_order = 0
+
+    def add(value: str, score: float, rule: str) -> None:
+        nonlocal next_order
+        if (
+            not value
+            or value in exclude
+            or not value.isascii()
+            or len(value) > max_length
+        ):
+            return
+        existing = values.get(value)
+        candidate = _Candidate(value, score, rule, next_order)
+        next_order += 1
+        if existing is None or (candidate.score, -candidate.order) > (
+            existing.score,
+            -existing.order,
+        ):
+            values[value] = candidate
+
+    ordered_atoms: list[list[tuple[str, float, str]]] = []
+    for hint in hints:
+        if _is_numeric(hint):
+            atoms = list(_v3_numeric_variants(hint))
+        elif re.search(r"[0-9]", hint):
+            atoms = list(_v3_mixed_hint_variants(hint))
+        else:
+            atoms = list(_v3_text_variants(hint))
+        ordered_atoms.append(atoms)
+        for value, score, rule in atoms:
+            add(value, score, rule)
+
+    # Combine only contiguous hints in their supplied order. No permutations,
+    # synthetic separators, or reversed strings are introduced.
+    for start in range(len(ordered_atoms)):
+        for end in range(start + 2, min(len(ordered_atoms), start + 3) + 1):
+            groups = ordered_atoms[start:end]
+            for combination in itertools.product(*groups):
+                value = "".join(atom[0] for atom in combination)
+                score = sum(atom[1] for atom in combination) / len(combination) - 10.0
+                rules = "+".join(atom[2] for atom in combination)
+                add(value, score, f"v3-concat-ordered:{rules}")
+
+    for value, score, rule in _inspirational_pinyin_variants():
+        add(value, score - 8.0, rule)
+
+    heap: list[tuple[int, int, float, int, int, str, _Candidate]] = []
+    for candidate in values.values():
+        phase = 0 if len(candidate.value) <= short_max_length else 1
+        heapq.heappush(
+            heap,
+            (
+                phase,
+                _v3_source_group(candidate.rule),
+                -candidate.score,
+                len(candidate.value),
+                candidate.order,
+                candidate.value,
+                candidate,
+            ),
+        )
+
+    ordered: list[_Candidate] = []
+    while heap:
+        _phase, _group, _negative_score, _length, _order, _value, candidate = heapq.heappop(heap)
+        ordered.append(candidate)
+    return ordered
+
+
+def candidates_v3(
+    hints: tuple[str, ...],
+    *,
+    short_max_length: int = DEFAULT_SHORT_MAX_LENGTH,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    exclude: Iterable[str] = (),
+) -> Iterator[str]:
+    """Yield conservative v3 candidates, with short values emitted first."""
+    clean = _clean_hints(hints)
+    excluded = frozenset(_clean_hints(exclude))
+    for candidate in _ordered_candidates_v3(clean, short_max_length, max_length, excluded):
+        yield candidate.value
+
+
+def run_v3(
+    limit: int,
+    *,
+    hints: tuple[str, ...] = EXAMPLE_HINTS,
+    target: str = EXAMPLE_TARGET,
+    short_max_length: int = DEFAULT_SHORT_MAX_LENGTH,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    exclude: Iterable[str] = (),
+    exclude_files: Iterable[Path | str] | None = None,
+    exclude_prefix: int = DEFAULT_V3_EXCLUSION_PREFIX,
+) -> tuple[str | None, int, bool]:
+    """Try the toy target using only the conservative v3 generator."""
+    if limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    excluded = set(_clean_hints(exclude))
+    baseline_files = (
+        _default_v3_exclusion_files()
+        if exclude_files is None
+        else tuple(exclude_files)
+    )
+    excluded.update(load_exclusion_prefixes(baseline_files, exclude_prefix))
+    attempts = 0
+    for attempts, candidate in enumerate(
+        candidates_v3(
+            hints,
+            short_max_length=short_max_length,
+            max_length=max_length,
+            exclude=excluded,
+        ),
+        start=1,
+    ):
+        if attempts > limit:
+            return None, limit, True
+        if candidate == target:
+            return candidate, attempts, False
+    return None, attempts, False
+
+
+def export_candidates_v3(
+    limit: int,
+    output_path: Path,
+    *,
+    hints: tuple[str, ...] = EXAMPLE_HINTS,
+    short_max_length: int = DEFAULT_SHORT_MAX_LENGTH,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    exclude: Iterable[str] = (),
+    exclude_files: Iterable[Path | str] | None = None,
+    exclude_prefix: int = DEFAULT_V3_EXCLUSION_PREFIX,
+) -> int:
+    """Write v3 candidates while excluding each baseline file's prefix."""
+    if limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    excluded = set(_clean_hints(exclude))
+    baseline_files = (
+        _default_v3_exclusion_files()
+        if exclude_files is None
+        else tuple(exclude_files)
+    )
+    excluded.update(load_exclusion_prefixes(baseline_files, exclude_prefix))
+    written = 0
+    with output_path.open("w", encoding="utf-8") as output:
+        for candidate in candidates_v3(
+            hints,
+            short_max_length=short_max_length,
+            max_length=max_length,
+            exclude=excluded,
+        ):
+            if written >= limit:
+                break
+            output.write(candidate + "\n")
+            written += 1
+    return written
+
+
 def run(
     limit: int,
     *,
@@ -521,6 +790,12 @@ def export_candidates(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Offline toy candidate lab")
+    parser.add_argument(
+        "--phase",
+        choices=("2", "3"),
+        default="2",
+        help="candidate strategy to run (default: 2)",
+    )
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument(
         "--hints-file",
@@ -532,6 +807,12 @@ def main() -> int:
         type=Path,
         action="append",
         help="candidate TXT to exclude; may be supplied more than once",
+    )
+    parser.add_argument(
+        "--exclude-prefix",
+        type=int,
+        default=DEFAULT_V3_EXCLUSION_PREFIX,
+        help="for phase 3, exclude this many entries from each baseline TXT (default: 10101)",
     )
     parser.add_argument(
         "--short-max-length",
@@ -548,12 +829,12 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"output text file (default: {DEFAULT_OUTPUT})",
+        help="output text file (default depends on --phase)",
     )
     args = parser.parse_args()
 
     print("离线教学实验：候选仅在本地生成，不自动提交到任何服务。")
+    print(f"实验阶段: {args.phase}")
     print(f"候选上限: {args.limit}")
     print(f"长度阶段: <= {args.short_max_length}，然后 {args.short_max_length + 1}..{args.max_length}")
     hints = (
@@ -561,27 +842,54 @@ def main() -> int:
         if args.hints_file
         else (load_hints(DEFAULT_HINTS_FILE) if DEFAULT_HINTS_FILE.exists() else EXAMPLE_HINTS)
     )
-    exclude_files = args.exclude or ([DEFAULT_BASELINE] if DEFAULT_BASELINE.exists() else [])
     try:
-        written = export_candidates(
-            args.limit,
-            args.output,
-            hints=hints,
-            short_max_length=args.short_max_length,
-            max_length=args.max_length,
-            exclude_files=exclude_files,
-        )
-        found, attempts, capped = run(
-            args.limit,
-            hints=hints,
-            short_max_length=args.short_max_length,
-            max_length=args.max_length,
-            exclude_files=exclude_files,
-        )
+        if args.phase == "3":
+            output_path = args.output or DEFAULT_V3_OUTPUT
+            exclude_files = args.exclude or [
+                path
+                for path in (DEFAULT_BASELINE, DEFAULT_OUTPUT)
+                if path.exists()
+            ]
+            excluded = load_exclusion_prefixes(exclude_files, args.exclude_prefix)
+            written = export_candidates_v3(
+                args.limit,
+                output_path,
+                hints=hints,
+                short_max_length=args.short_max_length,
+                max_length=args.max_length,
+                exclude=excluded,
+                exclude_files=(),
+            )
+            found, attempts, capped = run_v3(
+                args.limit,
+                hints=hints,
+                short_max_length=args.short_max_length,
+                max_length=args.max_length,
+                exclude=excluded,
+                exclude_files=(),
+            )
+        else:
+            output_path = args.output or DEFAULT_OUTPUT
+            exclude_files = args.exclude or ([DEFAULT_BASELINE] if DEFAULT_BASELINE.exists() else [])
+            written = export_candidates(
+                args.limit,
+                output_path,
+                hints=hints,
+                short_max_length=args.short_max_length,
+                max_length=args.max_length,
+                exclude_files=exclude_files,
+            )
+            found, attempts, capped = run(
+                args.limit,
+                hints=hints,
+                short_max_length=args.short_max_length,
+                max_length=args.max_length,
+                exclude_files=exclude_files,
+            )
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
 
-    print(f"已写入 {written} 条候选到: {args.output}")
+    print(f"已写入 {written} 条候选到: {output_path}")
 
     if found is not None:
         print(f"命中虚构目标: {found!r}")

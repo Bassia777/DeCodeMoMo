@@ -1,7 +1,13 @@
+import contextlib
+import io
+import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import toy_candidate_lab as lab
 from toy_candidate_lab import (
     DEFAULT_LIMIT,
     DEFAULT_OUTPUT,
@@ -158,6 +164,152 @@ class CandidateGenerationTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 list(candidates(("wyy",), **kwargs))
+
+    def test_v3_keeps_meaningful_hints_but_never_reverses_them(self):
+        values = set(
+            lab.candidates_v3(
+                ("ExampleName", "en", "010228", "2020"),
+                max_length=20,
+            )
+        )
+
+        self.assertTrue({"ExampleName", "examplename", "en", "EN", "010228", "2020"} <= values)
+        self.assertNotIn("emaNelpmaxE", values)
+        self.assertNotIn("ne", values)
+        self.assertNotIn("822010", values)
+
+    def test_v3_drops_generic_numbers_and_arbitrary_combinations(self):
+        values = set(
+            lab.candidates_v3(
+                ("ExampleName", "en", "987654321012", "2020"),
+                max_length=20,
+            )
+        )
+
+        self.assertIn("987654321012", values)
+        self.assertIn("2020", values)
+        self.assertNotIn("123456", values)
+        self.assertNotIn("1111", values)
+        self.assertNotIn("87654321012", values)
+        self.assertNotIn("765", values)
+        self.assertNotIn("ExampleName-en", values)
+        self.assertNotIn("enExampleName", values)
+
+        mixed_values = set(lab.candidates_v3(("a1-b",), max_length=20))
+        self.assertNotIn("a", mixed_values)
+        self.assertNotIn("b", mixed_values)
+
+    def test_v3_pinyin_stays_below_personal_hints(self):
+        values = list(lab.candidates_v3(("ExampleName", "en"), max_length=20))
+
+        self.assertLess(values.index("ExampleName"), values.index("xiongxinzhuangzhi"))
+        self.assertLess(values.index("en"), values.index("xiongxinzhuangzhi"))
+
+    def test_v3_prefix_exclusions_read_only_the_requested_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / "baseline.txt"
+            baseline.write_text("first\nsecond\nthird\n", encoding="utf-8")
+
+            self.assertEqual(
+                lab.load_exclusion_prefixes((baseline,), 2),
+                {"first", "second"},
+            )
+
+    def test_v3_export_applies_prefix_exclusions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory) / "baseline.txt"
+            output = Path(directory) / "v3.txt"
+            baseline.write_text("ExampleName\nnot-used\n", encoding="utf-8")
+
+            written = lab.export_candidates_v3(
+                25,
+                output,
+                hints=("ExampleName", "en"),
+                max_length=20,
+                exclude_files=(baseline,),
+                exclude_prefix=1,
+            )
+
+            lines = output.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(written, len(lines))
+            self.assertNotIn("ExampleName", lines)
+            self.assertIn("en", lines)
+
+    def test_v3_default_output_and_prefix_limit(self):
+        self.assertEqual(lab.DEFAULT_V3_OUTPUT.name, "toy_candidates_v3.txt")
+        self.assertEqual(lab.DEFAULT_V3_EXCLUSION_PREFIX, 10_101)
+
+    def test_run_v3_never_falls_back_to_the_v2_generator(self):
+        found, attempts, capped = lab.run_v3(
+            50_000,
+            hints=("ExampleName", "en"),
+            target="123456",
+            max_length=20,
+        )
+
+        self.assertIsNone(found)
+        self.assertLess(attempts, 50_000)
+        self.assertFalse(capped)
+
+    def test_v3_api_uses_default_baseline_prefixes_when_not_overridden(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline_v1 = Path(directory) / "v1.txt"
+            baseline_v2 = Path(directory) / "v2.txt"
+            output = Path(directory) / "v3.txt"
+            baseline_v1.write_text("ExampleName\n", encoding="utf-8")
+            baseline_v2.write_text("en\n", encoding="utf-8")
+
+            with patch.object(lab, "DEFAULT_BASELINE", baseline_v1), patch.object(
+                lab, "DEFAULT_OUTPUT", baseline_v2
+            ):
+                lab.export_candidates_v3(
+                    25,
+                    output,
+                    hints=("ExampleName", "en"),
+                    max_length=20,
+                )
+
+            lines = output.read_text(encoding="utf-8").splitlines()
+            self.assertNotIn("ExampleName", lines)
+            self.assertNotIn("en", lines)
+
+    def test_phase3_custom_exclude_is_used_for_export_and_stats(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hints = root / "hints.txt"
+            custom_baseline = root / "custom.txt"
+            default_v1 = root / "default-v1.txt"
+            default_v2 = root / "default-v2.txt"
+            output = root / "v3.txt"
+            hints.write_text("ExampleName\nen\n", encoding="utf-8")
+            custom_baseline.write_text("en\n", encoding="utf-8")
+            default_v1.write_text("ExampleName\n", encoding="utf-8")
+            default_v2.write_text("unused\n", encoding="utf-8")
+
+            argv = [
+                "toy_candidate_lab.py",
+                "--phase",
+                "3",
+                "--hints-file",
+                str(hints),
+                "--exclude",
+                str(custom_baseline),
+                "--output",
+                str(output),
+                "--limit",
+                "50000",
+            ]
+            captured = io.StringIO()
+            with patch.object(lab, "DEFAULT_BASELINE", default_v1), patch.object(
+                lab, "DEFAULT_OUTPUT", default_v2
+            ), patch.object(sys, "argv", argv), contextlib.redirect_stdout(captured):
+                exit_code = lab.main()
+
+            messages = captured.getvalue()
+            written = int(re.search(r"已写入 (\d+) 条候选", messages).group(1))
+            attempted = int(re.search(r"未命中，共尝试 (\d+) 个组合", messages).group(1))
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(written, attempted)
 
 
 if __name__ == "__main__":
