@@ -311,6 +311,91 @@ class CandidateGenerationTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(written, attempted)
 
+    def test_v4_promotes_maximal_shared_fragments_and_allows_both_orders(self):
+        values = set(
+            lab.candidates_v4(
+                ("alpha25805.0", "prefix2580123", "ExampleName", "en"),
+                max_length=20,
+            )
+        )
+
+        self.assertIn("2580", values)
+        self.assertIn("en2580", values)
+        self.assertIn("2580en", values)
+        self.assertNotIn("0852", values)
+        self.assertNotIn("258", values)
+        self.assertNotIn("580", values)
+
+    def test_v4_exact_exclusion_does_not_remove_new_combinations(self):
+        values = set(
+            lab.candidates_v4(
+                ("alpha25805.0", "prefix2580123", "en"),
+                max_length=20,
+                exclude={"2580"},
+            )
+        )
+
+        self.assertNotIn("2580", values)
+        self.assertIn("en2580", values)
+        self.assertIn("2580en", values)
+
+    def test_v4_keeps_user_pinyin_as_source_backed_keywords(self):
+        values = set(
+            lab.candidates_v4(
+                ("fictionalname", "literaryphrase", "commonspelling"),
+                max_length=20,
+            )
+        )
+
+        self.assertTrue(
+            {
+                "fictionalname",
+                "literaryphrase",
+                "commonspelling",
+            }
+            <= values
+        )
+        self.assertNotIn("emanlanoitcif", values)
+
+    def test_v4_default_baselines_include_v1_v2_prefixes_and_all_v3(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_v1 = root / "v1.txt"
+            baseline_v2 = root / "v2.txt"
+            baseline_v3 = root / "v3.txt"
+            output = root / "v4.txt"
+            baseline_v1.write_text("ExampleName\n", encoding="utf-8")
+            baseline_v2.write_text("en\n", encoding="utf-8")
+            baseline_v3.write_text("en2580\n", encoding="utf-8")
+
+            with patch.object(lab, "DEFAULT_BASELINE", baseline_v1), patch.object(
+                lab, "DEFAULT_OUTPUT", baseline_v2
+            ), patch.object(lab, "DEFAULT_V3_OUTPUT", baseline_v3):
+                lab.export_candidates_v4(
+                    100,
+                    output,
+                    hints=("alpha25805.0", "prefix2580123", "ExampleName", "en"),
+                    max_length=20,
+                )
+
+            lines = output.read_text(encoding="utf-8").splitlines()
+            self.assertNotIn("ExampleName", lines)
+            self.assertNotIn("en", lines)
+            self.assertNotIn("en2580", lines)
+            self.assertIn("2580en", lines)
+
+    def test_v4_default_output_and_length_order(self):
+        self.assertEqual(lab.DEFAULT_V4_OUTPUT.name, "toy_candidates_v4.txt")
+        values = list(
+            lab.candidates_v4(
+                ("alpha25805.0", "prefix2580123", "en"),
+                max_length=20,
+            )
+        )
+        first_long = next(index for index, value in enumerate(values) if len(value) > 15)
+        self.assertTrue(all(len(value) <= 15 for value in values[:first_long]))
+        self.assertTrue(all(len(value) <= 20 for value in values))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,8 +138,10 @@ DEFAULT_MAX_LENGTH = 20
 DEFAULT_LIMIT = 50_000
 DEFAULT_OUTPUT = Path(__file__).with_name("toy_candidates_v2.txt")
 DEFAULT_V3_OUTPUT = Path(__file__).with_name("toy_candidates_v3.txt")
+DEFAULT_V4_OUTPUT = Path(__file__).with_name("toy_candidates_v4.txt")
 DEFAULT_BASELINE = Path(__file__).with_name("toy_candidates_v1.txt")
 DEFAULT_V3_EXCLUSION_PREFIX = 10_101
+DEFAULT_V4_EXCLUSION_PREFIX = 10_101
 DEFAULT_HINTS_FILE = Path(__file__).with_name("personal_hints.local.txt")
 
 
@@ -149,6 +151,14 @@ class _Candidate:
     score: float
     rule: str
     order: int
+
+
+@dataclass(frozen=True)
+class _V4Atom:
+    value: str
+    score: float
+    rule: str
+    sources: frozenset[int]
 
 
 def _validate_lengths(short_max_length: int, max_length: int) -> None:
@@ -209,6 +219,15 @@ def _default_v3_exclusion_files() -> tuple[Path, ...]:
     return tuple(
         path
         for path in (DEFAULT_BASELINE, DEFAULT_OUTPUT)
+        if path.exists()
+    )
+
+
+def _default_v4_exclusion_files() -> tuple[Path, ...]:
+    """Return v1/v2 baselines and the complete v3 output for v4 callers."""
+    return tuple(
+        path
+        for path in (DEFAULT_BASELINE, DEFAULT_OUTPUT, DEFAULT_V3_OUTPUT)
         if path.exists()
     )
 
@@ -724,6 +743,276 @@ def export_candidates_v3(
     return written
 
 
+def _v4_normalize_hint(value: str) -> str:
+    """Normalize a hint for repeated-fragment discovery without changing output."""
+    return re.sub(r"[^A-Za-z0-9]", "", value).lower()
+
+
+def _v4_shared_fragments(
+    hints: tuple[str, ...],
+    *,
+    min_length: int = 3,
+    max_length: int = 12,
+) -> Iterator[tuple[str, float, str, frozenset[int]]]:
+    """Find maximal alphanumeric fragments shared by at least two hints."""
+    occurrences: dict[str, set[int]] = {}
+    complete_tokens: dict[int, set[str]] = {}
+    for source, hint in enumerate(hints):
+        normalized = _v4_normalize_hint(hint)
+        complete_tokens[source] = {
+            token.lower() for token in re.findall(r"[A-Za-z]+|[0-9]+", hint)
+        }
+        seen: set[str] = set()
+        upper = min(max_length, len(normalized))
+        for size in range(min_length, upper + 1):
+            for start in range(0, len(normalized) - size + 1):
+                seen.add(normalized[start : start + size])
+        for fragment in seen:
+            occurrences.setdefault(fragment, set()).add(source)
+
+    shared = [
+        (fragment, frozenset(sources))
+        for fragment, sources in occurrences.items()
+        if len(sources) >= 2
+        and (
+            any(character.isdigit() for character in fragment)
+            or any(fragment in complete_tokens[source] for source in sources)
+        )
+    ]
+    shared.sort(key=lambda item: (-len(item[0]), item[0], tuple(item[1])))
+    selected: list[tuple[str, frozenset[int]]] = []
+    for fragment, sources in shared:
+        if any(
+            fragment != larger
+            and fragment in larger
+            and sources <= larger_sources
+            for larger, larger_sources in selected
+        ):
+            continue
+        selected.append((fragment, sources))
+
+    for fragment, sources in selected:
+        score = min(104.0, 96.0 + len(fragment) * 1.5)
+        yield fragment, score, "v4-shared-fragment", sources
+
+
+def _v4_hint_atoms(hint: str, source: int) -> list[_V4Atom]:
+    """Convert one hint into source-backed atoms without reversals or arbitrary slices."""
+    if _is_numeric(hint):
+        variants = _v3_numeric_variants(hint)
+    elif re.search(r"[0-9]", hint):
+        variants = _v3_mixed_hint_variants(hint)
+    else:
+        variants = _v3_text_variants(hint)
+
+    atoms: dict[str, _V4Atom] = {}
+    for value, score, rule in variants:
+        if not value or len(value) < 2:
+            continue
+        atom = _V4Atom(value, score, rule, frozenset({source}))
+        existing = atoms.get(value)
+        if existing is None or atom.score > existing.score:
+            atoms[value] = atom
+    return list(atoms.values())
+
+
+def _v4_source_group(rule: str) -> int:
+    """Rank direct hints, shared fragments, ordered combinations, then public pinyin."""
+    if rule.startswith("inspirational-"):
+        return 3
+    if rule.startswith("v4-concat-triple"):
+        return 2
+    if rule.startswith("v4-concat-pair"):
+        return 1
+    return 0
+
+
+@lru_cache(maxsize=64)
+def _ordered_candidates_v4(
+    hints: tuple[str, ...],
+    short_max_length: int,
+    max_length: int,
+    exclude: frozenset[str] = frozenset(),
+) -> list[_Candidate]:
+    """Build v4 candidates from explicit hints and repeated semantic fragments."""
+    _validate_lengths(short_max_length, max_length)
+
+    values: dict[str, _Candidate] = {}
+    next_order = 0
+
+    def add(value: str, score: float, rule: str) -> None:
+        nonlocal next_order
+        if (
+            not value
+            or value in exclude
+            or not value.isascii()
+            or len(value) > max_length
+        ):
+            return
+        existing = values.get(value)
+        candidate = _Candidate(value, score, rule, next_order)
+        next_order += 1
+        if existing is None or (candidate.score, -candidate.order) > (
+            existing.score,
+            -existing.order,
+        ):
+            values[value] = candidate
+
+    atoms: list[_V4Atom] = []
+    canonical_atoms: list[_V4Atom] = []
+    for source, hint in enumerate(hints):
+        hint_atoms = _v4_hint_atoms(hint, source)
+        atoms.extend(hint_atoms)
+        literal = next((atom for atom in hint_atoms if "literal" in atom.rule), None)
+        if literal is not None:
+            canonical_atoms.append(literal)
+        for atom in hint_atoms:
+            add(atom.value, atom.score, atom.rule)
+
+    for value, score, rule, sources in _v4_shared_fragments(hints):
+        atom = _V4Atom(value, score, rule, sources)
+        atoms.append(atom)
+        canonical_atoms.append(atom)
+        add(value, score, rule)
+
+    # Pair combinations may use any two source-backed atoms in either order,
+    # even when their original hints are far apart. No new separators or
+    # character reversals are added.
+    for left, right in itertools.permutations(atoms, 2):
+        if left.sources & right.sources:
+            continue
+        value = left.value + right.value
+        score = (left.score + right.score) / 2.0 - 9.0
+        add(value, score, f"v4-concat-pair:{left.rule}+{right.rule}")
+
+    # Triples are limited to one canonical atom per hint/shared fragment so
+    # the grammar remains finite while covering meaningful three-part forms.
+    unique_canonical: dict[tuple[str, frozenset[int]], _V4Atom] = {}
+    for atom in canonical_atoms:
+        unique_canonical[(atom.value, atom.sources)] = atom
+    for first, second, third in itertools.permutations(unique_canonical.values(), 3):
+        if (first.sources & second.sources) or (first.sources & third.sources) or (second.sources & third.sources):
+            continue
+        value = first.value + second.value + third.value
+        score = (first.score + second.score + third.score) / 3.0 - 14.0
+        add(value, score, f"v4-concat-triple:{first.rule}+{second.rule}+{third.rule}")
+
+    for value, score, rule in _inspirational_pinyin_variants():
+        add(value, score - 8.0, rule)
+
+    heap: list[tuple[int, int, float, int, int, str, _Candidate]] = []
+    for candidate in values.values():
+        phase = 0 if len(candidate.value) <= short_max_length else 1
+        heapq.heappush(
+            heap,
+            (
+                phase,
+                _v4_source_group(candidate.rule),
+                -candidate.score,
+                len(candidate.value),
+                candidate.order,
+                candidate.value,
+                candidate,
+            ),
+        )
+
+    ordered: list[_Candidate] = []
+    while heap:
+        _phase, _group, _negative_score, _length, _order, _value, candidate = heapq.heappop(heap)
+        ordered.append(candidate)
+    return ordered
+
+
+def candidates_v4(
+    hints: tuple[str, ...],
+    *,
+    short_max_length: int = DEFAULT_SHORT_MAX_LENGTH,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    exclude: Iterable[str] = (),
+) -> Iterator[str]:
+    """Yield v4 candidates with shared fragments and bidirectional combinations."""
+    clean = _clean_hints(hints)
+    excluded = frozenset(_clean_hints(exclude))
+    for candidate in _ordered_candidates_v4(clean, short_max_length, max_length, excluded):
+        yield candidate.value
+
+
+def run_v4(
+    limit: int,
+    *,
+    hints: tuple[str, ...] = EXAMPLE_HINTS,
+    target: str = EXAMPLE_TARGET,
+    short_max_length: int = DEFAULT_SHORT_MAX_LENGTH,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    exclude: Iterable[str] = (),
+    exclude_files: Iterable[Path | str] | None = None,
+    exclude_prefix: int = DEFAULT_V4_EXCLUSION_PREFIX,
+) -> tuple[str | None, int, bool]:
+    """Try the toy target using the v4 generator and its default baselines."""
+    if limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    excluded = set(_clean_hints(exclude))
+    baseline_files = (
+        _default_v4_exclusion_files()
+        if exclude_files is None
+        else tuple(exclude_files)
+    )
+    excluded.update(load_exclusion_prefixes(baseline_files, exclude_prefix))
+    attempts = 0
+    for attempts, candidate in enumerate(
+        candidates_v4(
+            hints,
+            short_max_length=short_max_length,
+            max_length=max_length,
+            exclude=excluded,
+        ),
+        start=1,
+    ):
+        if attempts > limit:
+            return None, limit, True
+        if candidate == target:
+            return candidate, attempts, False
+    return None, attempts, False
+
+
+def export_candidates_v4(
+    limit: int,
+    output_path: Path,
+    *,
+    hints: tuple[str, ...] = EXAMPLE_HINTS,
+    short_max_length: int = DEFAULT_SHORT_MAX_LENGTH,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    exclude: Iterable[str] = (),
+    exclude_files: Iterable[Path | str] | None = None,
+    exclude_prefix: int = DEFAULT_V4_EXCLUSION_PREFIX,
+) -> int:
+    """Write v4 candidates, excluding baseline files by exact full value."""
+    if limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    excluded = set(_clean_hints(exclude))
+    baseline_files = (
+        _default_v4_exclusion_files()
+        if exclude_files is None
+        else tuple(exclude_files)
+    )
+    excluded.update(load_exclusion_prefixes(baseline_files, exclude_prefix))
+    written = 0
+    with output_path.open("w", encoding="utf-8") as output:
+        for candidate in candidates_v4(
+            hints,
+            short_max_length=short_max_length,
+            max_length=max_length,
+            exclude=excluded,
+        ):
+            if written >= limit:
+                break
+            output.write(candidate + "\n")
+            written += 1
+    return written
+
+
 def run(
     limit: int,
     *,
@@ -792,7 +1081,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Offline toy candidate lab")
     parser.add_argument(
         "--phase",
-        choices=("2", "3"),
+        choices=("2", "3", "4"),
         default="2",
         help="candidate strategy to run (default: 2)",
     )
@@ -811,8 +1100,8 @@ def main() -> int:
     parser.add_argument(
         "--exclude-prefix",
         type=int,
-        default=DEFAULT_V3_EXCLUSION_PREFIX,
-        help="for phase 3, exclude this many entries from each baseline TXT (default: 10101)",
+        default=DEFAULT_V4_EXCLUSION_PREFIX,
+        help="for phase 3/4, exclude this many entries from each baseline TXT (default: 10101)",
     )
     parser.add_argument(
         "--short-max-length",
@@ -861,6 +1150,31 @@ def main() -> int:
                 exclude_files=(),
             )
             found, attempts, capped = run_v3(
+                args.limit,
+                hints=hints,
+                short_max_length=args.short_max_length,
+                max_length=args.max_length,
+                exclude=excluded,
+                exclude_files=(),
+            )
+        elif args.phase == "4":
+            output_path = args.output or DEFAULT_V4_OUTPUT
+            exclude_files = args.exclude or [
+                path
+                for path in (DEFAULT_BASELINE, DEFAULT_OUTPUT, DEFAULT_V3_OUTPUT)
+                if path.exists()
+            ]
+            excluded = load_exclusion_prefixes(exclude_files, args.exclude_prefix)
+            written = export_candidates_v4(
+                args.limit,
+                output_path,
+                hints=hints,
+                short_max_length=args.short_max_length,
+                max_length=args.max_length,
+                exclude=excluded,
+                exclude_files=(),
+            )
+            found, attempts, capped = run_v4(
                 args.limit,
                 hints=hints,
                 short_max_length=args.short_max_length,

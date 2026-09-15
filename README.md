@@ -46,6 +46,14 @@ DeCodeMoMo 是一个密码解密实验项目。项目根据用户提供的提示
 
 作为失败基线，第三期分别读取 `toy_candidates_v1.txt` 和 `toy_candidates_v2.txt` 的前 10101 条；出现在任一前缀中的候选都不会写入 `toy_candidates_v3.txt`。
 
+### 第四期：重复语义片段和跨位置组合
+
+第三期实验失败后发现，限制“只能连接相邻提示”会遗漏距离较远但有明确含义的关键字组合。第四期将不同提示中重复出现的最长片段识别为语义原子，并允许任意两个语义原子按两种顺序直接连接。
+
+第四期仍不翻转关键字内部字符、不添加新分隔符，也不恢复通用自然数字。排除采用完整字符串匹配：某个单独原子已经失败，不会连带排除包含该原子的新组合。
+
+第四期排除 v1、v2 各自前 10101 条以及完整的 v3 结果，输出写入 `toy_candidates_v4.txt`。新增中文线索只以拼音保存在本地提示文件中，不进入仓库。
+
 ## 本地运行
 
 把个人线索逐行放在 `personal_hints.local.txt` 中。这个文件已加入 `.gitignore`，不会上传到 GitHub。
@@ -70,6 +78,17 @@ python3 toy_candidate_lab.py \
 ```
 
 未显式指定 `--exclude` 时，第三期会自动使用 v1 和 v2 文件；未指定 `--exclude-prefix` 时，每个文件默认只读取前 10101 条。输出默认写入 `toy_candidates_v3.txt`。
+
+第四期运行命令：
+
+```bash
+python3 toy_candidate_lab.py \
+  --phase 4 \
+  --hints-file personal_hints.local.txt \
+  --limit 50000
+```
+
+第四期默认使用 v1、v2 和 v3 作为排除文件；由于 v3 少于 10101 条，因此会被完整排除。输出默认写入 `toy_candidates_v4.txt`。
 
 ## 测试
 
