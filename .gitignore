@@ -1,5 +1,6 @@
 # Local-only inputs and generated candidate lists.
 personal_hints.local.txt
+author_profile.local.json
 toy_candidates*.txt
 *.local.txt
 

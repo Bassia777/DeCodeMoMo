@@ -54,6 +54,20 @@ DeCodeMoMo 是一个密码解密实验项目。项目根据用户提供的提示
 
 第四期排除 v1、v2 各自前 10101 条以及完整的 v3 结果，输出写入 `toy_candidates_v4.txt`。新增中文线索只以拼音保存在本地提示文件中，不进入仓库。
 
+### 第五期：作者画像驱动的排序
+
+前四期的失败说明“密码等于提示词排列组合”这个前提本身有问题，也说明在“只能验证终值”的环境里，值得优化的不是候选覆盖面，而是**正确候选的排名**。
+
+第五期因此不再设计新的字符串规则，而是先建立作者画像，再按可信度排序：
+
+- 画像按人生线索分类（姓名、曾用密码、网名笔名、生日、星座、数字、联系方式等），分类和单条线索都可以设置权重；
+- 候选只由完整线索拼接而成，不反转、不拆分已给出的密码、不插入分隔符，大小写只允许原样、词首大写、整体大写；
+- 排序分数取“最弱组成线索的权重”，再按拼接的线索数量递减，并对超过 15 位的候选统一重罚，使 15 位以内的候选优先；
+- 励志短句等低可信度来源被标记为尾部分类，既不参与组合，也永远排在提示词之后；
+- 继续排除 v1、v2 各自前 10101 条以及完整的 v3、v4 结果。
+
+第五期输出写入 `toy_candidates_v5.txt`。真实画像保存在本地 `author_profile.local.json`，仓库中只有脱敏模板 `author_profile.example.json`。
+
 ## 本地运行
 
 把个人线索逐行放在 `personal_hints.local.txt` 中。这个文件已加入 `.gitignore`，不会上传到 GitHub。
@@ -90,11 +104,38 @@ python3 toy_candidate_lab.py \
 
 第四期默认使用 v1、v2 和 v3 作为排除文件；由于 v3 少于 10101 条，因此会被完整排除。输出默认写入 `toy_candidates_v4.txt`。
 
+第五期运行命令：
+
+```bash
+python3 profile_candidates.py
+```
+
+默认读取 `author_profile.local.json`，自动使用 v1/v2 各自前 10101 条与完整 v3、v4 作为排除基线，输出写入 `toy_candidates_v5.txt`。需要覆盖排除范围时可以显式传入：
+
+```bash
+python3 profile_candidates.py \
+  --exclude-head toy_candidates_v1.txt \
+  --exclude-head toy_candidates_v2.txt \
+  --exclude toy_candidates_v3.txt \
+  --exclude toy_candidates_v4.txt \
+  --exclude-head-lines 10101 \
+  --limit 50000
+```
+
+每轮实验只需要更新本地画像（新增或修改权重），再重新执行一次生成命令。
+
 ## 测试
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile toy_candidate_lab.py tests/test_toy_candidate_lab.py
+```
+
+第五期生成器同样包含在测试范围内：
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile profile_candidates.py tests/test_profile_candidates.py
 ```
 
 ## 实验边界

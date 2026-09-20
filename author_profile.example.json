@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "updated": "YYYY-MM-DD",
+  "codename": "你自己",
+  "notes": "复制为 author_profile.local.json 后填写真实线索；真实画像已被 .gitignore 忽略。中文线索只以无空格拼音写入 value。",
+  "trailing_dimensions": [
+    "inspiration"
+  ],
+  "dimensions": {
+    "identity": {
+      "weight": 100,
+      "description": "姓名、拼音、昵称、昵称缩写",
+      "items": [
+        {
+          "value": "example-full-name",
+          "kind": "pinyin_name",
+          "confidence": "high",
+          "note": "姓名全拼"
+        },
+        {
+          "value": "efn",
+          "kind": "name_initials",
+          "confidence": "high",
+          "note": "姓名首字母"
+        }
+      ]
+    },
+    "history": {
+      "weight": 96,
+      "description": "曾用密码与历史密码形态，整体保留，不拆分",
+      "items": [
+        {
+          "value": "example-old-pass",
+          "kind": "former_password",
+          "confidence": "high",
+          "note": "曾用密码"
+        }
+      ]
+    },
+    "aliases": {
+      "weight": 95,
+      "description": "同一人的多个姓名形态之间的对应关系；只描述关系，不产生候选",
+      "items": [
+        {
+          "value": "example-full-name <-> efn",
+          "kind": "name_pair",
+          "confidence": "high",
+          "note": "全拼与首字母"
+        }
+      ]
+    },
+    "online_handle": {
+      "weight": 90,
+      "description": "网名、笔名、游戏 ID、论坛马甲、社交账号昵称",
+      "items": [
+        {
+          "value": "example-handle",
+          "kind": "handle",
+          "confidence": "high",
+          "note": "网名"
+        }
+      ]
+    },
+    "dates": {
+      "weight": 86,
+      "description": "生日、纪念日、毕业年份、关键事件年份",
+      "items": [
+        {
+          "value": "20000101",
+          "kind": "birthday",
+          "confidence": "high",
+          "note": "生日"
+        }
+      ]
+    },
+    "games": {
+      "weight": 78,
+      "description": "游戏名、角色名、公会、服务器、游戏梗",
+      "items": []
+    },
+    "zodiac": {
+      "weight": 76,
+      "description": "星座、生肖等出生相关标签",
+      "items": []
+    },
+    "interests": {
+      "weight": 74,
+      "description": "爱好：棋类、运动、音乐、动漫",
+      "items": []
+    },
+    "works": {
+      "weight": 72,
+      "description": "喜欢的诗词、书籍、台词、典故",
+      "items": []
+    },
+    "numbers": {
+      "weight": 70,
+      "description": "学号、工号、门牌、幸运数字等个人数字",
+      "items": []
+    },
+    "contacts": {
+      "weight": 66,
+      "description": "手机号、邮箱前缀等联系方式片段；出现在曾用密码里的片段可用条目级 weight 单独提高",
+      "items": [
+        {
+          "value": "1234",
+          "kind": "phone_fragment",
+          "confidence": "medium",
+          "weight": 92,
+          "note": "条目级权重覆盖示例"
+        }
+      ]
+    },
+    "relationships": {
+      "weight": 62,
+      "description": "家人、伴侣、宠物的名字与生日",
+      "items": []
+    },
+    "places": {
+      "weight": 58,
+      "description": "家乡、常驻城市、学校、公司",
+      "items": []
+    },
+    "unclassified": {
+      "weight": 0,
+      "description": "待确认归属的线索",
+      "items": []
+    },
+    "inspiration": {
+      "weight": 45,
+      "description": "励志短句拼音：尾部分类，不参与组合，永远排在提示词之后",
+      "items": []
+    }
+  },
+  "combination_rules": {
+    "no_reverse": true,
+    "no_split_existing": true,
+    "case_styles": [
+      "as_given",
+      "capitalize",
+      "all_upper"
+    ],
+    "no_inner_caps": true,
+    "short_max_length": 15,
+    "long_length_penalty": 20,
+    "combination_penalty": 6,
+    "notes": "分数 = 最弱原子权重 − 6 × (原子数 − 1) − 超过 15 位时的 20 分惩罚"
+  }
+}
+

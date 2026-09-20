@@ -19,7 +19,7 @@ from typing import Iterable, Iterator
 
 
 # Fictional teaching data only. Do not replace these with real credentials.
-EXAMPLE_HINTS = ("wyy", "wangyaoyi", "010228", "15361652627", "17680162930")
+EXAMPLE_HINTS = ("abc", "examplename", "040711", "13000000000", "13800000000")
 EXAMPLE_TARGET = ""
 SEPARATORS = ("", "-", "_", " ", ".")
 COMMON_NUMBERS = (

@@ -22,25 +22,25 @@ from toy_candidate_lab import (
 
 class CandidateGenerationTests(unittest.TestCase):
     def test_natural_number_patterns_are_independent_of_hints(self):
-        values = set(candidates(("wyy",), max_length=20))
+        values = set(candidates(("abc",), max_length=20))
 
         self.assertTrue(
             {"012345", "123456", "654321", "000000", "112233"} <= values
         )
 
     def test_numeric_fragments_and_reversed_fragments_are_generated(self):
-        values = set(candidates(("010228",), max_length=20))
+        values = set(candidates(("040711",), max_length=20))
 
-        self.assertTrue({"010228", "10228", "228", "822010"} <= values)
+        self.assertTrue({"040711", "40711", "711", "117040"} <= values)
 
     def test_text_and_numeric_rules_can_be_mixed(self):
-        values = set(candidates(("wyy", "010228"), max_length=20))
+        values = set(candidates(("abc", "040711"), max_length=20))
 
-        self.assertIn("wyy010228", values)
-        self.assertIn("010228wyy", values)
+        self.assertIn("abc040711", values)
+        self.assertIn("040711abc", values)
 
     def test_inspirational_pinyin_is_expanded_and_has_no_spaces_or_chinese(self):
-        values = set(candidates(("wyy",), max_length=20))
+        values = set(candidates(("abc",), max_length=20))
 
         expected = {
             "xiongxinzhuangzhi",
@@ -56,9 +56,9 @@ class CandidateGenerationTests(unittest.TestCase):
         self.assertTrue(all(value.isascii() for value in values))
 
     def test_inspirational_pinyin_ranks_below_prompt_and_above_common_numbers(self):
-        values = list(candidates(("wyy",), max_length=20))
+        values = list(candidates(("abc",), max_length=20))
 
-        self.assertLess(values.index("wyy"), values.index("xiongxinzhuangzhi"))
+        self.assertLess(values.index("abc"), values.index("xiongxinzhuangzhi"))
         self.assertLess(values.index("weilaikeqi"), values.index("123456"))
 
     def test_default_candidate_limit_is_fifty_thousand(self):
@@ -67,10 +67,10 @@ class CandidateGenerationTests(unittest.TestCase):
         self.assertEqual(DEFAULT_OUTPUT.name, "toy_candidates_v2.txt")
 
     def test_exclusion_set_is_a_hard_filter(self):
-        excluded = {"wyy", "123456"}
-        values = list(candidates(("wyy",), max_length=20, exclude=excluded))
+        excluded = {"abc", "123456"}
+        values = list(candidates(("abc",), max_length=20, exclude=excluded))
 
-        self.assertNotIn("wyy", values)
+        self.assertNotIn("abc", values)
         self.assertNotIn("123456", values)
         self.assertIn("weilaikeqi", values)
 
@@ -91,30 +91,30 @@ class CandidateGenerationTests(unittest.TestCase):
             self.assertEqual(load_hints(hints_path), ("alpha", "beta"))
 
     def test_mixed_personal_hint_can_keep_literal_and_split_forms(self):
-        values = set(candidates(("alpha25805.0",), max_length=20))
+        values = set(candidates(("alpha13579.0",), max_length=20))
 
-        self.assertTrue({"alpha25805.0", "alpha258050", "25805", "0"} <= values)
+        self.assertTrue({"alpha13579.0", "alpha135790", "13579", "0"} <= values)
 
     def test_export_applies_exclusion_file(self):
         with tempfile.TemporaryDirectory() as directory:
             excluded_path = Path(directory) / "v1.txt"
             output_path = Path(directory) / "v2.txt"
-            excluded_path.write_text("wyy\n", encoding="utf-8")
+            excluded_path.write_text("abc\n", encoding="utf-8")
 
             written = export_candidates(
                 25,
                 output_path,
-                hints=("wyy",),
+                hints=("abc",),
                 max_length=20,
                 exclude_files=(excluded_path,),
             )
 
             lines = output_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(written, 25)
-            self.assertNotIn("wyy", lines)
+            self.assertNotIn("abc", lines)
 
     def test_short_candidates_are_emitted_before_long_candidates(self):
-        values = list(candidates(("wangyaoyi", "15361652627"), max_length=20))
+        values = list(candidates(("examplename", "13000000000"), max_length=20))
 
         first_long = next(index for index, value in enumerate(values) if len(value) > 15)
         self.assertTrue(all(len(value) <= 15 for value in values[:first_long]))
@@ -122,21 +122,21 @@ class CandidateGenerationTests(unittest.TestCase):
         self.assertTrue(all(len(value) <= 20 for value in values))
 
     def test_candidate_generation_is_deterministic_and_deduplicated(self):
-        values_a = list(candidates(("wyy", "010228"), max_length=20))
-        values_b = list(candidates(("wyy", "010228"), max_length=20))
+        values_a = list(candidates(("abc", "040711"), max_length=20))
+        values_b = list(candidates(("abc", "040711"), max_length=20))
 
         self.assertEqual(values_a, values_b)
         self.assertEqual(len(values_a), len(set(values_a)))
 
     def test_run_honors_limit_and_can_use_a_test_target(self):
-        first = next(candidates(("wyy",), max_length=20))
+        first = next(candidates(("abc",), max_length=20))
 
         self.assertEqual(
-            run(1, hints=("wyy",), target=first, max_length=20),
+            run(1, hints=("abc",), target=first, max_length=20),
             (first, 1, False),
         )
         self.assertEqual(
-            run(1, hints=("wyy",), target="not-generated", max_length=20),
+            run(1, hints=("abc",), target="not-generated", max_length=20),
             (None, 1, True),
         )
 
@@ -147,7 +147,7 @@ class CandidateGenerationTests(unittest.TestCase):
             written = export_candidates(
                 25,
                 output_path,
-                hints=("wyy", "010228"),
+                hints=("abc", "040711"),
                 max_length=20,
             )
 
@@ -163,20 +163,22 @@ class CandidateGenerationTests(unittest.TestCase):
             {"short_max_length": 15, "max_length": 0},
         ):
             with self.assertRaises(ValueError):
-                list(candidates(("wyy",), **kwargs))
+                list(candidates(("abc",), **kwargs))
 
     def test_v3_keeps_meaningful_hints_but_never_reverses_them(self):
         values = set(
             lab.candidates_v3(
-                ("ExampleName", "en", "010228", "2020"),
+                ("ExampleName", "en", "040711", "2020"),
                 max_length=20,
             )
         )
 
-        self.assertTrue({"ExampleName", "examplename", "en", "EN", "010228", "2020"} <= values)
+        self.assertTrue(
+            {"ExampleName", "examplename", "en", "EN", "040711", "2020"} <= values
+        )
         self.assertNotIn("emaNelpmaxE", values)
         self.assertNotIn("ne", values)
-        self.assertNotIn("822010", values)
+        self.assertNotIn("117040", values)
 
     def test_v3_drops_generic_numbers_and_arbitrary_combinations(self):
         values = set(
@@ -314,30 +316,30 @@ class CandidateGenerationTests(unittest.TestCase):
     def test_v4_promotes_maximal_shared_fragments_and_allows_both_orders(self):
         values = set(
             lab.candidates_v4(
-                ("alpha25805.0", "prefix2580123", "ExampleName", "en"),
+                ("alpha13579.0", "prefix1357123", "ExampleName", "en"),
                 max_length=20,
             )
         )
 
-        self.assertIn("2580", values)
-        self.assertIn("en2580", values)
-        self.assertIn("2580en", values)
-        self.assertNotIn("0852", values)
-        self.assertNotIn("258", values)
-        self.assertNotIn("580", values)
+        self.assertIn("1357", values)
+        self.assertIn("en1357", values)
+        self.assertIn("1357en", values)
+        self.assertNotIn("7531", values)
+        self.assertNotIn("135", values)
+        self.assertNotIn("357", values)
 
     def test_v4_exact_exclusion_does_not_remove_new_combinations(self):
         values = set(
             lab.candidates_v4(
-                ("alpha25805.0", "prefix2580123", "en"),
+                ("alpha13579.0", "prefix1357123", "en"),
                 max_length=20,
-                exclude={"2580"},
+                exclude={"1357"},
             )
         )
 
-        self.assertNotIn("2580", values)
-        self.assertIn("en2580", values)
-        self.assertIn("2580en", values)
+        self.assertNotIn("1357", values)
+        self.assertIn("en1357", values)
+        self.assertIn("1357en", values)
 
     def test_v4_keeps_user_pinyin_as_source_backed_keywords(self):
         values = set(
@@ -366,7 +368,7 @@ class CandidateGenerationTests(unittest.TestCase):
             output = root / "v4.txt"
             baseline_v1.write_text("ExampleName\n", encoding="utf-8")
             baseline_v2.write_text("en\n", encoding="utf-8")
-            baseline_v3.write_text("en2580\n", encoding="utf-8")
+            baseline_v3.write_text("en1357\n", encoding="utf-8")
 
             with patch.object(lab, "DEFAULT_BASELINE", baseline_v1), patch.object(
                 lab, "DEFAULT_OUTPUT", baseline_v2
@@ -374,21 +376,21 @@ class CandidateGenerationTests(unittest.TestCase):
                 lab.export_candidates_v4(
                     100,
                     output,
-                    hints=("alpha25805.0", "prefix2580123", "ExampleName", "en"),
+                    hints=("alpha13579.0", "prefix1357123", "ExampleName", "en"),
                     max_length=20,
                 )
 
             lines = output.read_text(encoding="utf-8").splitlines()
             self.assertNotIn("ExampleName", lines)
             self.assertNotIn("en", lines)
-            self.assertNotIn("en2580", lines)
-            self.assertIn("2580en", lines)
+            self.assertNotIn("en1357", lines)
+            self.assertIn("1357en", lines)
 
     def test_v4_default_output_and_length_order(self):
         self.assertEqual(lab.DEFAULT_V4_OUTPUT.name, "toy_candidates_v4.txt")
         values = list(
             lab.candidates_v4(
-                ("alpha25805.0", "prefix2580123", "en"),
+                ("alpha13579.0", "prefix1357123", "en"),
                 max_length=20,
             )
         )
