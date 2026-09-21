@@ -144,7 +144,18 @@
     "short_max_length": 15,
     "long_length_penalty": 20,
     "combination_penalty": 6,
-    "notes": "分数 = 最弱原子权重 − 6 × (原子数 − 1) − 超过 15 位时的 20 分惩罚"
+    "separators": [
+      "",
+      ".",
+      "_"
+    ],
+    "separator_min_weight": 84,
+    "separator_penalty": 1,
+    "doubling_max_length": 6,
+    "doubling_penalty": 8,
+    "version_min_minor": 1,
+    "version_max_minor": 9,
+    "version_penalty": 4,
+    "notes": "分数 = 最弱原子权重 − 6 × (原子数 − 1) − 超过 15 位时的 20 分惩罚；分隔符、重复片段和版本号递增来自作者旧密码暴露的书写习惯"
   }
 }
-
