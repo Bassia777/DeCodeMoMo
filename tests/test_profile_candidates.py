@@ -8,6 +8,7 @@ from profile_candidates import (
     case_variants,
     export_candidates,
     load_profile,
+    typo_variants,
 )
 
 
@@ -33,6 +34,24 @@ class CaseVariantTests(unittest.TestCase):
 
     def test_case_variants_keep_existing_inner_capitals(self):
         self.assertEqual(list(case_variants("Example")), ["Example", "EXAMPLE"])
+
+
+class TypoVariantTests(unittest.TestCase):
+    def test_stutter_appends_and_drops_are_enumerated(self):
+        values = set(typo_variants("abc", append_digits="9"))
+
+        self.assertTrue({"aabc", "abbc", "abcc", "abc9"} <= values)
+
+    def test_short_values_are_not_dropped_below_meaningfulness(self):
+        values = set(typo_variants("abc", append_digits=""))
+
+        self.assertNotIn("ab", values)
+        self.assertNotIn("bc", values)
+
+    def test_typo_variants_never_reorder_characters(self):
+        values = set(typo_variants("abcd", append_digits="1"))
+
+        self.assertNotIn("dcba", values)
 
 
 class ProfileCandidateTests(unittest.TestCase):
@@ -119,6 +138,39 @@ class ProfileCandidateTests(unittest.TestCase):
         values = list(candidates_from_profile(profile, max_length=20))
 
         self.assertLess(values.index("aaa"), values.index("verylongatom"))
+
+    def test_single_character_typos_of_strong_atoms_are_generated(self):
+        profile = _profile({"identity": (100, ["abcd"]), "contacts": (66, ["wxyz"])})
+
+        values = set(candidates_from_profile(profile, max_length=20))
+
+        self.assertIn("aabcd", values)
+        self.assertIn("abcd0", values)
+        self.assertNotIn("wxyz0", values)
+
+    def test_typo_atoms_combine_with_strong_partners_only(self):
+        profile = _profile(
+            {
+                "identity": (100, ["abcd"]),
+                "dates": (86, ["1111"]),
+                "contacts": (66, ["9999"]),
+            }
+        )
+
+        values = set(candidates_from_profile(profile, max_length=20))
+
+        self.assertIn("aabcd1111", values)
+        self.assertIn("1111aabcd", values)
+        self.assertNotIn("aabcd9999", values)
+
+    def test_typo_family_can_be_disabled(self):
+        profile = _profile({"identity": (100, ["abcd"])})
+        profile["combination_rules"] = {"typo_enabled": False, "separators": [""]}
+
+        values = set(candidates_from_profile(profile, max_length=20))
+
+        self.assertIn("abcd", values)
+        self.assertNotIn("aabcd", values)
 
     def test_trusted_dimensions_rank_before_weaker_ones(self):
         profile = _profile(

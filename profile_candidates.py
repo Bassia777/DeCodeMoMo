@@ -27,7 +27,7 @@ from typing import Iterable, Iterator, Sequence
 
 MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROFILE = MODULE_DIR / "author_profile.local.json"
-DEFAULT_OUTPUT = MODULE_DIR / "toy_candidates_v6.txt"
+DEFAULT_OUTPUT = MODULE_DIR / "toy_candidates_v7.txt"
 DEFAULT_LIMIT = 50_000
 DEFAULT_MAX_LENGTH = 20
 
@@ -60,12 +60,22 @@ DEFAULT_VERSION_MAX_MINOR = 9
 DEFAULT_VERSION_PENALTY = 4
 VERSION_SUFFIX_PATTERN = re.compile(r"^(?P<head>.*?)(?P<major>\d+)\.(?P<minor>\d+)$")
 
+# 手抖/打错一个字符：多打一位（相邻键连击）、漏打一位、结尾多敲一个数字。
+DEFAULT_TYPO_ENABLED = True
+DEFAULT_TYPO_MIN_WEIGHT = 84
+DEFAULT_TYPO_MAX_ATOM_LENGTH = 12
+DEFAULT_TYPO_PENALTY = 12
+DEFAULT_TYPO_APPEND_DIGITS = "0123456789"
+DEFAULT_TYPO_PARTNER_MIN_WEIGHT = 84
+DEFAULT_TYPO_PARTNER_MAX_LENGTH = 8
+
 # 默认失败基线：v1/v2 只排除已验证过的前缀，v3/v4 全部排除。
 DEFAULT_HEAD_BASELINES = ("toy_candidates_v1.txt", "toy_candidates_v2.txt")
 DEFAULT_FULL_BASELINES = (
     "toy_candidates_v3.txt",
     "toy_candidates_v4.txt",
     "toy_candidates_v5.txt",
+    "toy_candidates_v6.txt",
 )
 DEFAULT_EXCLUDE_PREFIX_LENGTH = 10_101
 
@@ -161,6 +171,43 @@ def version_variants(value: str, *, min_minor: int, max_minor: int) -> Iterator[
     for candidate_major in (major - 1, major + 1):
         if candidate_major >= 0:
             yield f"{head}{candidate_major}.{minor}"
+
+
+def typo_variants(
+    value: str,
+    *,
+    append_digits: str = DEFAULT_TYPO_APPEND_DIGITS,
+    stutter: bool = True,
+    drop: bool = True,
+) -> Iterator[str]:
+    """Yield likely single-character typos of a value.
+
+    只覆盖三种“手抖”形态，不做任意字符插入：
+
+    * stutter：某一位被连击，多出一个相同字符（如 ``wsq`` → ``wssq``）；
+    * drop：某一位漏打（如 ``wangsiqi`` → ``wangsiq``）；
+    * append：结尾多敲一个数字（如 ``2580`` → ``25805``）。
+    """
+    if not value:
+        return
+    seen: set[str] = set()
+    if stutter:
+        for index, char in enumerate(value):
+            candidate = f"{value[: index + 1]}{char}{value[index + 1 :]}"
+            if candidate != value and candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+    if drop and len(value) > 3:
+        for index in range(len(value)):
+            candidate = f"{value[:index]}{value[index + 1 :]}"
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+    for digit in append_digits:
+        candidate = value + digit
+        if candidate not in seen:
+            seen.add(candidate)
+            yield candidate
 
 
 def _trusted_atoms(
@@ -278,6 +325,46 @@ def candidates_from_profile(
         ):
             for variant in case_variants(bumped):
                 _remember(hint_rank, variant, (atom.weight - version_penalty,))
+
+    # 手抖多打/漏打一个字符：只对高可信短线索生效，并允许它继续和强线索拼接。
+    typo_enabled = bool(_rule(profile, "typo_enabled", DEFAULT_TYPO_ENABLED))
+    typo_min_weight = float(_rule(profile, "typo_min_weight", DEFAULT_TYPO_MIN_WEIGHT))
+    typo_max_atom_length = int(
+        _rule(profile, "typo_max_atom_length", DEFAULT_TYPO_MAX_ATOM_LENGTH)
+    )
+    typo_penalty = float(_rule(profile, "typo_penalty", DEFAULT_TYPO_PENALTY))
+    typo_append_digits = str(
+        _rule(profile, "typo_append_digits", DEFAULT_TYPO_APPEND_DIGITS)
+    )
+    partner_min_weight = float(
+        _rule(profile, "typo_partner_min_weight", DEFAULT_TYPO_PARTNER_MIN_WEIGHT)
+    )
+    partner_max_length = int(
+        _rule(profile, "typo_partner_max_length", DEFAULT_TYPO_PARTNER_MAX_LENGTH)
+    )
+
+    if typo_enabled:
+        typo_atoms: list[tuple[str, float, str]] = []
+        for atom in combinable:
+            if atom.weight < typo_min_weight or len(atom.value) > typo_max_atom_length:
+                continue
+            for typo in typo_variants(atom.value, append_digits=typo_append_digits):
+                typo_weight = atom.weight - typo_penalty
+                typo_atoms.append((typo, typo_weight, atom.value))
+                for variant in case_variants(typo):
+                    _remember(hint_rank, variant, (typo_weight,))
+
+        partners = [
+            atom
+            for atom in combinable
+            if atom.weight >= partner_min_weight and len(atom.value) <= partner_max_length
+        ]
+        for typo, typo_weight, source in typo_atoms:
+            for partner in partners:
+                if partner.value == source:
+                    continue
+                add(typo + partner.value, (typo_weight, float(partner.weight)))
+                add(partner.value + typo, (float(partner.weight), typo_weight))
 
     # 两原子组合：整块拼接、两种顺序；高可信线索之间才插入符号分隔。
     for left, right in itertools.permutations(combinable, 2):
