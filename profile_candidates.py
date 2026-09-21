@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
@@ -26,7 +27,7 @@ from typing import Iterable, Iterator, Sequence
 
 MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROFILE = MODULE_DIR / "author_profile.local.json"
-DEFAULT_OUTPUT = MODULE_DIR / "toy_candidates_v5.txt"
+DEFAULT_OUTPUT = MODULE_DIR / "toy_candidates_v6.txt"
 DEFAULT_LIMIT = 50_000
 DEFAULT_MAX_LENGTH = 20
 
@@ -47,9 +48,25 @@ TRIO_ATOM_LIMIT = 14
 NON_ATOM_KINDS = frozenset({"name_pair", "relationship"})
 RELATIONSHIP_MARKERS = ("<->", "->", "=>")
 
+# 作者本人旧密码暴露出来的书写习惯，第六期才被纳入模型：
+# `wyy25805.0` 说明他会用符号分隔和类似版本号的尾部，`168168` 说明他会重复片段。
+DEFAULT_SEPARATORS = ("", ".", "_")
+DEFAULT_SEPARATOR_MIN_WEIGHT = 84
+DEFAULT_SEPARATOR_PENALTY = 1
+DEFAULT_DOUBLING_MAX_LENGTH = 6
+DEFAULT_DOUBLING_PENALTY = 4
+DEFAULT_VERSION_MIN_MINOR = 1
+DEFAULT_VERSION_MAX_MINOR = 9
+DEFAULT_VERSION_PENALTY = 4
+VERSION_SUFFIX_PATTERN = re.compile(r"^(?P<head>.*?)(?P<major>\d+)\.(?P<minor>\d+)$")
+
 # 默认失败基线：v1/v2 只排除已验证过的前缀，v3/v4 全部排除。
 DEFAULT_HEAD_BASELINES = ("toy_candidates_v1.txt", "toy_candidates_v2.txt")
-DEFAULT_FULL_BASELINES = ("toy_candidates_v3.txt", "toy_candidates_v4.txt")
+DEFAULT_FULL_BASELINES = (
+    "toy_candidates_v3.txt",
+    "toy_candidates_v4.txt",
+    "toy_candidates_v5.txt",
+)
 DEFAULT_EXCLUDE_PREFIX_LENGTH = 10_101
 
 
@@ -118,6 +135,34 @@ def _trailing_dimensions(profile: dict) -> frozenset[str]:
     return frozenset(str(name) for name in names)
 
 
+def _rule(profile: dict, key: str, default):
+    """Read one optional tuning value from the profile's combination_rules."""
+    rules = profile.get("combination_rules")
+    if not isinstance(rules, dict) or key not in rules:
+        return default
+    return rules[key]
+
+
+def version_variants(value: str, *, min_minor: int, max_minor: int) -> Iterator[str]:
+    """Yield version-bumped forms of a dotted value such as ``oldpass5.0``.
+
+    作者用过的旧密码带有 “.0” 这样的尾部，说明他可能按版本号递增来改密码，
+    因此这里只生成“尾号加一档”和“主号加减一”的形式，不做任意数字替换。
+    """
+    match = VERSION_SUFFIX_PATTERN.match(value)
+    if not match:
+        return
+    head = match.group("head")
+    major = int(match.group("major"))
+    minor = int(match.group("minor"))
+    for candidate_minor in range(min_minor, max_minor + 1):
+        if candidate_minor != minor:
+            yield f"{head}{major}.{candidate_minor}"
+    for candidate_major in (major - 1, major + 1):
+        if candidate_major >= 0:
+            yield f"{head}{candidate_major}.{minor}"
+
+
 def _trusted_atoms(
     profile: dict, atoms: Sequence[_Atom], trailing: frozenset[str]
 ) -> list[_Atom]:
@@ -154,11 +199,20 @@ def candidates_from_profile(
     trailing = _trailing_dimensions(profile)
     combinable = [atom for atom in atoms if atom.dimension not in trailing]
 
+    # 评分参数可在画像里调整，方便每轮实验只改数据不改代码。
+    short_max_length = int(_rule(profile, "short_max_length", SHORT_MAX_LENGTH))
+    long_length_penalty = float(
+        _rule(profile, "long_length_penalty", LONG_LENGTH_PENALTY)
+    )
+    combination_penalty = float(
+        _rule(profile, "combination_penalty", COMBINATION_PENALTY)
+    )
+
     def _score(value: str, component_weights: Sequence[float]) -> float:
         """分数以最弱原子为准，再扣掉组合复杂度与超长惩罚。"""
-        score = min(component_weights) - COMBINATION_PENALTY * (len(component_weights) - 1)
-        if len(value) > SHORT_MAX_LENGTH:
-            score -= LONG_LENGTH_PENALTY
+        score = min(component_weights) - combination_penalty * (len(component_weights) - 1)
+        if len(value) > short_max_length:
+            score -= long_length_penalty
         return score
 
     hint_rank: dict[str, tuple[float, int, int]] = {}
@@ -193,14 +247,49 @@ def candidates_from_profile(
         for variant in case_variants(atom.value):
             _remember(store, variant, (atom.weight,))
 
-    # 两原子组合：整块拼接、两种顺序、不加分隔符。
+    # 作者旧密码暴露的书写习惯：符号分隔、片段重复、版本号递增。
+    separators = tuple(
+        str(item) for item in _rule(profile, "separators", DEFAULT_SEPARATORS)
+    ) or ("",)
+    separator_min_weight = int(
+        _rule(profile, "separator_min_weight", DEFAULT_SEPARATOR_MIN_WEIGHT)
+    )
+    separator_penalty = float(
+        _rule(profile, "separator_penalty", DEFAULT_SEPARATOR_PENALTY)
+    )
+    doubling_max_length = int(
+        _rule(profile, "doubling_max_length", DEFAULT_DOUBLING_MAX_LENGTH)
+    )
+    doubling_penalty = float(
+        _rule(profile, "doubling_penalty", DEFAULT_DOUBLING_PENALTY)
+    )
+    version_minor = (
+        int(_rule(profile, "version_min_minor", DEFAULT_VERSION_MIN_MINOR)),
+        int(_rule(profile, "version_max_minor", DEFAULT_VERSION_MAX_MINOR)),
+    )
+    version_penalty = float(_rule(profile, "version_penalty", DEFAULT_VERSION_PENALTY))
+
+    for atom in combinable:
+        if 0 < len(atom.value) <= doubling_max_length:
+            for variant in case_variants(atom.value):
+                _remember(hint_rank, variant + variant, (atom.weight - doubling_penalty,))
+        for bumped in version_variants(
+            atom.value, min_minor=version_minor[0], max_minor=version_minor[1]
+        ):
+            for variant in case_variants(bumped):
+                _remember(hint_rank, variant, (atom.weight - version_penalty,))
+
+    # 两原子组合：整块拼接、两种顺序；高可信线索之间才插入符号分隔。
     for left, right in itertools.permutations(combinable, 2):
         if left.value == right.value:
             continue
         weights = (float(left.weight), float(right.weight))
+        usable_separators = separators if min(weights) >= separator_min_weight else ("",)
         for left_variant in case_variants(left.value):
             for right_variant in case_variants(right.value):
-                add(left_variant + right_variant, weights)
+                for index, separator in enumerate(usable_separators):
+                    penalised = tuple(weight - separator_penalty * index for weight in weights)
+                    add(left_variant + separator + right_variant, penalised)
 
     # 三原子组合：只取最高权重分类中的少量原子，保持候选集有限。
     if include_triples:

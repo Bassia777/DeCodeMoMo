@@ -48,7 +48,7 @@ class ProfileCandidateTests(unittest.TestCase):
 
         values = set(candidates_from_profile(profile, max_length=20))
 
-        self.assertEqual(values, {"oldpass1.0", "Oldpass1.0", "OLDPASS1.0"})
+        self.assertTrue({"oldpass1.0", "Oldpass1.0", "OLDPASS1.0"} <= values)
         self.assertNotIn("oldpass", values)
         self.assertNotIn("pass1", values)
         self.assertNotIn("oldpass1", values)
@@ -58,9 +58,9 @@ class ProfileCandidateTests(unittest.TestCase):
 
         values = list(candidates_from_profile(profile, max_length=20))
 
-        self.assertLess(values.index("abc123"), 8)
+        self.assertLess(values.index("abc123"), 12)
 
-    def test_whole_atoms_combine_in_both_orders_without_separators(self):
+    def test_whole_atoms_combine_in_both_orders(self):
         profile = _profile({"identity": (100, ["aaa"]), "dates": (86, ["111"])})
 
         values = set(candidates_from_profile(profile, max_length=20))
@@ -68,7 +68,57 @@ class ProfileCandidateTests(unittest.TestCase):
         self.assertIn("aaa111", values)
         self.assertIn("111aaa", values)
         self.assertNotIn("aaa-111", values)
-        self.assertNotIn("aaa_111", values)
+
+    def test_configured_separators_only_apply_to_strong_atoms(self):
+        strong = _profile({"identity": (100, ["aaa"]), "dates": (86, ["111"])})
+        weak = _profile({"identity": (100, ["aaa"]), "contacts": (66, ["111"])})
+
+        strong_values = set(candidates_from_profile(strong, max_length=20))
+        weak_values = set(candidates_from_profile(weak, max_length=20))
+
+        self.assertIn("aaa.111", strong_values)
+        self.assertIn("aaa_111", strong_values)
+        self.assertNotIn("aaa.111", weak_values)
+        self.assertNotIn("aaa_111", weak_values)
+
+    def test_repeated_fragments_are_generated_for_short_atoms(self):
+        profile = _profile({"identity": (100, ["aaa"]), "dates": (86, ["1234567"])})
+
+        values = set(candidates_from_profile(profile, max_length=20))
+
+        self.assertIn("aaaaaa", values)
+        self.assertNotIn("12345671234567", values)
+
+    def test_version_suffix_is_bumped_without_touching_the_body(self):
+        profile = _profile({"history": (96, ["oldpass5.0"])})
+
+        values = set(candidates_from_profile(profile, max_length=20))
+
+        self.assertIn("oldpass5.1", values)
+        self.assertIn("oldpass5.9", values)
+        self.assertIn("oldpass6.0", values)
+        self.assertIn("oldpass4.0", values)
+        self.assertNotIn("oldpass5.0.0", values)
+        self.assertNotIn("oldpass", values)
+
+    def test_scoring_parameters_can_be_overridden_in_the_profile(self):
+        profile = _profile({"identity": (100, ["aaa"]), "dates": (86, ["verylongatom"] )})
+        profile["combination_rules"] = {
+            "short_max_length": 15,
+            "long_length_penalty": 100,
+            "combination_penalty": 6,
+            "separators": [""],
+            "separator_min_weight": 84,
+            "doubling_max_length": 0,
+            "doubling_penalty": 4,
+            "version_min_minor": 1,
+            "version_max_minor": 9,
+            "version_penalty": 4,
+        }
+
+        values = list(candidates_from_profile(profile, max_length=20))
+
+        self.assertLess(values.index("aaa"), values.index("verylongatom"))
 
     def test_trusted_dimensions_rank_before_weaker_ones(self):
         profile = _profile(
@@ -171,7 +221,8 @@ class ProfileCandidateTests(unittest.TestCase):
 
         values = set(candidates_from_profile(profile, max_length=20))
 
-        self.assertEqual(values, {"ascii", "Ascii", "ASCII"})
+        self.assertTrue({"ascii", "Ascii", "ASCII"} <= values)
+        self.assertFalse(any(not value.isascii() for value in values))
 
     def test_every_candidate_is_unique(self):
         profile = _profile(
